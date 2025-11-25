@@ -1,0 +1,12 @@
+blocked_actions:
+  - shell_command
+
+blocked_bundle_ids:
+  - com.apple.keychainaccess
+
+hitl_actions:
+  - erase_disk
+  - format_disk
+
+notes: |
+  Extend this file to reflect local risk appetite and app allow/deny lists.
