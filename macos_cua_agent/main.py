@@ -4,7 +4,7 @@ import time
 from pathlib import Path
 
 from macos_cua_agent.agent.cognitive_core import CognitiveCore
-from macos_cua_agent.agent.state_manager import StateManager
+from macos_cua_agent.agent.state_manager import ActionResult, StateManager
 from macos_cua_agent.drivers.action_engine import ActionEngine
 from macos_cua_agent.drivers.vision_pipeline import VisionPipeline
 from macos_cua_agent.policies.policy_engine import PolicyEngine
@@ -43,6 +43,7 @@ def _run_session(
     repeat_without_change = 0
     repeat_same_action = 0
     repeat_info_for_model: dict | None = None
+    hotkey_counts: dict[tuple[str, ...], int] = {}
 
     try:
         while not state.should_halt():
@@ -54,6 +55,18 @@ def _run_session(
             if action.get("type") == "noop":
                 logger.info("Noop action requested; stopping loop. Reason: %s", action.get("reason"))
                 break
+
+            # Deduplicate hotkeys: avoid spamming the same combo more than twice in a session.
+            if action.get("type") == "key":
+                combo = tuple(sorted([k.lower() for k in action.get("keys") or []]))
+                count = hotkey_counts.get(combo, 0)
+                if count >= 2:
+                    logger.info("Skipping hotkey %s; already executed %s times", "+".join(combo), count)
+                    result = ActionResult(success=False, reason="hotkey deduped")
+                    state.record_action(action, result)
+                    repeat_info_for_model = {"count": repeat_same_action, "action": repr(action)}
+                    continue
+                hotkey_counts[combo] = count + 1
 
             result = action_engine.execute(action)
             state.record_action(action, result)
