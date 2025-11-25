@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+
 from macos_cua_agent.agent.state_manager import ActionResult
 from macos_cua_agent.drivers.hid_driver import HIDDriver
 from macos_cua_agent.drivers.semantic_driver import SemanticDriver
@@ -30,11 +32,20 @@ class ActionEngine:
         # Special-cased actions for loop control.
         if action.get("type") in ("noop", "capture_only"):
             return ActionResult(success=True, reason=action.get("reason", "noop"))
+        if action.get("type") == "wait":
+            seconds = float(action.get("seconds", 1))
+            time.sleep(seconds)
+            return ActionResult(success=True, reason=f"waited {seconds} seconds")
 
+        self.logger.info("Executing action via %s: %s", action.get("execution", "hid"), action)
         execution_path = action.get("execution", "hid")
         if execution_path == "semantic" and self.settings.enable_semantic:
-            return self.semantic_driver.execute(action)
-        return self._execute_hid(action)
+            result = self.semantic_driver.execute(action)
+        else:
+            result = self._execute_hid(action)
+
+        self.logger.info("Action result: success=%s reason=%s", result.success, result.reason)
+        return result
 
     def _execute_hid(self, action: dict) -> ActionResult:
         action_type = action.get("type")
@@ -47,6 +58,8 @@ class ActionEngine:
             return self.hid_driver.left_click(x, y)
         if action_type == "right_click" and x is not None and y is not None:
             return self.hid_driver.right_click(x, y)
+        if action_type == "double_click" and x is not None and y is not None:
+            return self.hid_driver.double_click(x, y)
         if action_type == "scroll":
             clicks = action.get("clicks", 0)
             return self.hid_driver.scroll(int(clicks))

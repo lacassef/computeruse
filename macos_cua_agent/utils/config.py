@@ -17,10 +17,9 @@ def _get_bool(name: str, default: bool = False) -> bool:
 
 @dataclass
 class Settings:
-    anthropic_api_key: str | None = os.getenv("ANTHROPIC_API_KEY")
-    anthropic_model: str = os.getenv("ANTHROPIC_MODEL", "claude-3-5-sonnet-20240620")
-    tool_type: str = os.getenv("ANTHROPIC_TOOL_TYPE", "computer_20241022")
-    beta_header: str = os.getenv("ANTHROPIC_BETA_HEADER", "computer-use-2025-01-24")
+    openrouter_api_key: str | None = os.getenv("OPENROUTER_API_KEY")
+    openrouter_base_url: str = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+    openrouter_model: str = os.getenv("OPENROUTER_MODEL", "anthropic/claude-opus-4.5")
 
     log_level: str = os.getenv("LOG_LEVEL", "INFO")
     encode_format: str = os.getenv("ENCODE_FORMAT", "JPEG")
@@ -33,5 +32,4 @@ class Settings:
 
     enable_hid: bool = _get_bool("ENABLE_HID", False)
     enable_semantic: bool = _get_bool("ENABLE_SEMANTIC", False)
-    use_anthropic: bool = _get_bool("USE_ANTHROPIC", False)
-
+    use_openrouter: bool = _get_bool("USE_OPENROUTER", True)

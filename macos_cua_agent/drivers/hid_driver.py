@@ -39,11 +39,14 @@ class HIDDriver:
     def right_click(self, x: float, y: float) -> ActionResult:
         return self._perform(lambda: self.pg.click(*self._to_px(x, y), button="right"), f"right_click({x},{y})")
 
+    def double_click(self, x: float, y: float) -> ActionResult:
+        return self._perform(lambda: self.pg.doubleClick(*self._to_px(x, y)), f"double_click({x},{y})")
+
     def type_text(self, text: str) -> ActionResult:
         return self._perform(lambda: self.pg.write(text, interval=0.02), f"type:{text!r}")
 
     def press_keys(self, keys: Iterable[str]) -> ActionResult:
-        combo = list(keys)
+        combo = [self._normalize_key(k) for k in keys if k]
         return self._perform(lambda: self.pg.hotkey(*combo), f"hotkey:{'+'.join(combo)}")
 
     def scroll(self, clicks: int) -> ActionResult:
@@ -55,6 +58,7 @@ class HIDDriver:
             return ActionResult(success=True, reason="dry-run")
         try:
             func()
+            self.logger.info("HID action executed: %s", label)
             return ActionResult(success=True)
         except Exception as exc:
             self.logger.error("HID action failed: %s", exc)
@@ -63,3 +67,13 @@ class HIDDriver:
     def _to_px(self, x: float, y: float) -> Tuple[int, int]:
         return point_to_px(x, y, self.display.scale_factor)
 
+    def _normalize_key(self, key: str) -> str:
+        mapping = {
+            "cmd": "command",
+            "command": "command",
+            "control": "ctrl",
+            "option": "alt",
+            "return": "enter",
+        }
+        lower = key.lower()
+        return mapping.get(lower, lower)

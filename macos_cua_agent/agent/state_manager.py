@@ -43,12 +43,23 @@ class StateManager:
     def record_observation(self, image_b64: str, changed: bool, note: str = "") -> Observation:
         obs = Observation(image_b64=image_b64, timestamp=time.time(), changed_since_last=changed, note=note)
         self.observations.append(obs)
-        self.history.append(f"observation@{obs.timestamp}")
+        self.history.append(
+            f"observation@{obs.timestamp}:changed={changed}" + (f":{note}" if note else "")
+        )
         return obs
 
     def record_action(self, action: Dict[str, Any], result: ActionResult) -> None:
         self.actions.append(action)
-        self.history.append(f"action:{action.get('type', 'unknown')}:{result.success}")
+        action_summary = {
+            "type": action.get("type", "unknown"),
+            "success": result.success,
+            "reason": result.reason,
+            "keys": action.get("keys"),
+            "text": action.get("text"),
+            "x": action.get("x"),
+            "y": action.get("y"),
+        }
+        self.history.append(f"action:{action_summary}")
         self.steps += 1
         if not result.success:
             self.failure_count += 1
@@ -71,4 +82,3 @@ class StateManager:
             "observations": len(self.observations),
             "runtime_seconds": time.time() - self.started_at,
         }
-
