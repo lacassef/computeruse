@@ -106,3 +106,32 @@ class Reflector:
         except Exception as exc:  # pragma: no cover - defensive path
             self.logger.warning("Reflection hint failed: %s", exc)
             return ""
+
+    def describe_image(self, screenshot_b64: str) -> str:
+        """Generate a concise text description of the screenshot for semantic memory."""
+        if not self.client:
+            return ""
+        
+        prompt = (
+            "Describe the current desktop state concisely (1-2 sentences). "
+            "Focus on the active window, visible applications, and any open documents or websites. "
+            "Ignore background wallpaper or system tray unless relevant."
+        )
+        content = [
+            {"type": "text", "text": prompt},
+            {"type": "image_url", "image_url": {"url": f"data:{self.mime};base64,{screenshot_b64}"}},
+        ]
+        try:
+            response = self.client.chat.completions.create(
+                model=self.settings.reflector_model,
+                messages=[
+                    {"role": "system", "content": "Be concise and objective."},
+                    {"role": "user", "content": content},
+                ],
+                max_tokens=500,
+            )
+            raw = response.choices[0].message.content if response and response.choices else ""
+            return "".join([frag.text for frag in raw]) if isinstance(raw, list) else str(raw or "")
+        except Exception as exc:  # pragma: no cover - defensive path
+            self.logger.warning("Image description failed: %s", exc)
+            return ""

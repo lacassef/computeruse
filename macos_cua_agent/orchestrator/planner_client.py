@@ -51,9 +51,10 @@ class PlannerClient:
             "Write a concise JSON object with an ordered `steps` array. "
             "Each step must have fields: id (int), description (string), success_criteria (string), status (pending|in_progress|done|failed), notes (string), expected_state (string).\n"
             "- Split the task into 3-7 small UI-manipulation steps that can usually be finished in 10-60 seconds.\n"
-            "- Avoid vague steps like 'execute the task'; prefer concrete UI goals such as 'Open Safari and navigate to example.com'.\n"
+            "- Apply SMART goal principles (Specific, Measurable, Achievable, Relevant, Time-bound) to each step.\n"
+            "- 'description' must be Specific and Action-oriented (e.g., 'Click the Search icon', not 'Find file').\n"
+            "- 'success_criteria' must be Measurable and VISUAL (e.g., 'Search bar appears', not 'Search is ready').\n"
             "- Mark the first step status as 'in_progress'; others should start as 'pending'.\n"
-            "- success_criteria must be VISUAL, e.g. 'Safari window visible with example.com loaded'.\n"
             "- expected_state is optional; use it to note the anticipated UI state before running the step.\n"
             "Example step:\n"
             "{ \"id\": 0, \"description\": \"Open Safari\", \"success_criteria\": \"Safari window is visible\", \"status\": \"in_progress\", \"notes\": \"\", \"expected_state\": \"Dock shows Safari not active\" }\n"
@@ -93,6 +94,8 @@ class PlannerClient:
             "as the planner output: id, user_prompt, steps (with id, description, success_criteria, "
             "status, notes, expected_state), current_step_index.\n"
             "- Keep 3-7 concise, UI-grounded steps that a human could finish in 10-60 seconds each.\n"
+            "- Ensure steps follow SMART principles (Specific, Measurable, Achievable, Relevant, Time-bound).\n"
+            "- 'success_criteria' must be VISUAL and Measurable.\n"
             "- Mark steps as done if their success_criteria are visibly satisfied in the screenshot.\n"
             "- Mark obviously blocked steps as failed with a short note; add missing steps if needed.\n"
             "- Ensure exactly one step is 'in_progress' (the first not-done step). Others pending or done.\n"
@@ -211,6 +214,30 @@ class PlannerClient:
         except Exception as exc:  # pragma: no cover - defensive path
             self.logger.warning("Planner summary failed: %s", exc)
             return self._fallback_summary(history)
+
+    def summarize_history_chunk(self, history_chunk: List[str]) -> str:
+        """Compress a list of history events into a single summary line."""
+        if not self.client or not history_chunk:
+            return ""
+        
+        text_block = "\n".join(history_chunk)
+        system_prompt = (
+            "Compress the following list of agent events into a single concise summary sentence. "
+            "Focus on actions taken and their outcomes. Ignore noise."
+        )
+        try:
+            response = self.client.chat.completions.create(
+                model=self.settings.planner_model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": text_block[:4000]},  # Safe truncation
+                ],
+                max_tokens=200,
+            )
+            content = response.choices[0].message.content if response and response.choices else ""
+            return str(content or "").strip()
+        except Exception:
+            return ""
 
     def _fallback_summary(self, history: List[str]) -> str:
         if not history:

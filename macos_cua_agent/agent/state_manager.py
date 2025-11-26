@@ -20,6 +20,13 @@ class Observation:
     note: str = ""
 
 
+@dataclass
+class Note:
+    content: str
+    source: str
+    timestamp: float
+
+
 class StateManager:
     """Tracks loop state, history, and termination criteria."""
 
@@ -36,6 +43,7 @@ class StateManager:
         self.history: List[str] = []
         self.actions: List[Dict[str, Any]] = []
         self.observations: List[Observation] = []
+        self.notebook: List[Note] = []
         self.failure_count = 0
         self.steps = 0
         self.started_at = time.time()
@@ -48,6 +56,24 @@ class StateManager:
             f"observation@{obs.timestamp}:changed={changed}" + (f":{note}" if note else "")
         )
         return obs
+
+    def add_note(self, content: str, source: str = "agent") -> None:
+        """Add a persistent note to the working memory."""
+        self.notebook.append(Note(content=content, source=source, timestamp=time.time()))
+        self.history.append(f"notebook: added note from {source}")
+
+    def get_notebook_summary(self) -> str:
+        """Return a formatted string of all notes."""
+        if not self.notebook:
+            return "Notebook is empty."
+        lines = ["Current Notebook Content:"]
+        for i, note in enumerate(self.notebook, 1):
+            lines.append(f"{i}. [{note.source}] {note.content}")
+        return "\n".join(lines)
+
+    def clear_notebook(self) -> None:
+        self.notebook.clear()
+        self.history.append("notebook: cleared")
 
     def record_action(self, action: Dict[str, Any], result: ActionResult) -> None:
         self.actions.append(action)

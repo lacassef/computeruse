@@ -3,6 +3,8 @@ from __future__ import annotations
 import time
 
 from macos_cua_agent.agent.state_manager import ActionResult
+from macos_cua_agent.drivers.accessibility_driver import AccessibilityDriver
+from macos_cua_agent.drivers.browser_driver import BrowserDriver
 from macos_cua_agent.drivers.hid_driver import HIDDriver
 from macos_cua_agent.drivers.semantic_driver import SemanticDriver
 from macos_cua_agent.drivers.shell_driver import ShellDriver
@@ -20,6 +22,8 @@ class ActionEngine:
         self.hid_driver = HIDDriver(settings)
         self.semantic_driver = SemanticDriver(settings)
         self.shell_driver = ShellDriver(settings)
+        self.accessibility_driver = AccessibilityDriver(settings)
+        self.browser_driver = BrowserDriver(settings)
         self.logger = get_logger(__name__, level=settings.log_level)
 
     def execute(self, action: dict) -> ActionResult:
@@ -41,7 +45,14 @@ class ActionEngine:
 
         self.logger.info("Executing action via %s: %s", action.get("execution", "hid"), action)
         execution_path = action.get("execution", "hid")
-        if execution_path == "semantic" and self.settings.enable_semantic:
+        action_type = action.get("type")
+
+        if action_type == "inspect_ui":
+            return self.accessibility_driver.get_active_window_tree()
+        
+        if execution_path == "browser":
+            return self.browser_driver.execute_browser_action(action)
+        elif execution_path == "semantic" and self.settings.enable_semantic:
             result = self.semantic_driver.execute(action)
         elif execution_path == "shell":
             result = self.shell_driver.execute(action)

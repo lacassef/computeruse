@@ -91,6 +91,11 @@ class Orchestrator:
                         repeat_info_for_model = None
 
                 current_step = plan.current_step() if plan else None
+                
+                # Context Compression
+                if len(state.history) > 60:
+                    self._compress_history(state)
+
                 loop_state = self._format_loop_state(plan, state, repeat_same_action, repeat_without_change)
                 action = self.cognitive_core.propose_action(
                     current_frame,
@@ -105,6 +110,26 @@ class Orchestrator:
                 if action.get("type") == "noop":
                     self.logger.info("Noop action requested; stopping loop. Reason: %s", action.get("reason"))
                     break
+
+                # Handle Notebook Operations (Internal State)
+                if action.get("type") == "notebook_op":
+                    op_action = action.get("action")
+                    content = action.get("content", "")
+                    source = action.get("source", "")
+                    if op_action == "add_note":
+                        state.add_note(content, source)
+                        result = ActionResult(success=True, reason="note added")
+                    elif op_action == "clear_notes":
+                        state.clear_notebook()
+                        result = ActionResult(success=True, reason="notes cleared")
+                    else:
+                        result = ActionResult(success=False, reason=f"unknown notebook op {op_action}")
+                    
+                    state.record_action(action, result)
+                    # Notebook ops are fast internal updates; no need to wait or sleep significantly.
+                    # But we should capture a frame if we want to verify something, though usually not needed.
+                    # We continue to the next step immediately.
+                    continue
 
                 if action.get("type") == "key":
                     combo = tuple(sorted([k.lower() for k in action.get("keys") or []]))
@@ -165,6 +190,17 @@ class Orchestrator:
                         step_completed = self._heuristic_step_complete(current_step, action, result, changed)
                     if step_completed:
                         finished_id = current_step.id if current_step else None
+                        
+                        # Visual Memory: Record the state at step completion
+                        if self.reflector.available:
+                            description = self.reflector.describe_image(next_frame)
+                            if description:
+                                self.memory.add_semantic_item(
+                                    text=f"Visual state after step {finished_id}: {description}",
+                                    metadata={"step_id": finished_id, "plan_id": plan.id if plan else ""}
+                                )
+                                self.logger.info("Saved visual memory for step %s", finished_id)
+
                         plan.advance()
                         hotkey_counts.clear()
                         state.history.append(
@@ -295,6 +331,7 @@ class Orchestrator:
             "steps_taken": state.steps,
             "repeat_same_action": repeat_same_action,
             "repeat_without_change": repeat_without_change,
+            "notebook_summary": state.get_notebook_summary() if hasattr(state, "get_notebook_summary") else ""
         }
 
     def _heuristic_step_complete(self, step: Step, action: dict, result: ActionResult, changed: bool) -> bool:
@@ -342,3 +379,18 @@ class Orchestrator:
             self.memory.save_episode(episode)
         except Exception as exc:  # pragma: no cover - defensive logging
             self.logger.warning("Failed to persist episode: %s", exc)
+
+    def _compress_history(self, state: StateManager) -> None:
+        """Summarize the oldest part of the history to keep the context manageable."""
+        # Keep index 0 (usually plan_init or user_prompt)
+        # Summarize index 1 to 20
+        # Keep rest
+        if len(state.history) < 60:
+            return
+        
+        chunk_to_summarize = state.history[1:21]
+        summary = self.planner.summarize_history_chunk(chunk_to_summarize)
+        if summary:
+            self.logger.info("Compressing history: %s items -> 1 summary", len(chunk_to_summarize))
+            new_history = [state.history[0]] + [f"history_summary:{summary}"] + state.history[21:]
+            state.history = new_history

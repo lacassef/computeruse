@@ -27,6 +27,9 @@ blocked_shell_basenames:
   - wget
   - chmod
   - chown
+  - nc
+  - telnet
+  - ftp
 
 notes: |
   Extend this file to reflect local risk appetite and app allow/deny lists.
