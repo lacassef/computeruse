@@ -11,6 +11,7 @@ class Step:
     success_criteria: str
     status: str = "pending"  # pending|in_progress|done|failed
     notes: str = ""
+    expected_state: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)

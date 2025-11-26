@@ -27,6 +27,7 @@ class Settings:
     reflector_base_url: str = os.getenv("REFLECTOR_BASE_URL", openrouter_base_url)
     reflector_model: str = os.getenv("REFLECTOR_MODEL", "openai/gpt-5.1")
     enable_reflection: bool = _get_bool("ENABLE_REFLECTION", True)
+    strict_step_completion: bool = _get_bool("STRICT_STEP_COMPLETION", True)
     embedding_api_key: str | None = os.getenv("EMBEDDING_API_KEY") or os.getenv("OPENAI_API_KEY")
     embedding_base_url: str = os.getenv("EMBEDDING_BASE_URL", "https://api.openai.com/v1")
     embedding_model: str = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
@@ -42,7 +43,13 @@ class Settings:
 
     enable_hid: bool = _get_bool("ENABLE_HID", False)
     enable_semantic: bool = _get_bool("ENABLE_SEMANTIC", False)
+    enable_shell: bool = _get_bool("ENABLE_SHELL", False)
     use_openrouter: bool = _get_bool("USE_OPENROUTER", True)
     planner_use_openrouter: bool = use_openrouter
     enable_embeddings: bool = _get_bool("ENABLE_EMBEDDINGS", False)
     memory_root: str | None = os.getenv("MEMORY_ROOT")
+
+    shell_workspace_root: str = os.getenv("SHELL_WORKSPACE_ROOT", ".agent_shell")
+    shell_max_runtime_s: int = int(os.getenv("SHELL_MAX_RUNTIME_S", "10"))
+    shell_max_output_bytes: int = int(os.getenv("SHELL_MAX_OUTPUT_BYTES", "65536"))
+    shell_allowed_commands: str = os.getenv("SHELL_ALLOWED_COMMANDS", "")

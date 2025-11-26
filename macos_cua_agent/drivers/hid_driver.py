@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 from typing import Iterable, Optional, Tuple
 
 from macos_cua_agent.agent.state_manager import ActionResult
@@ -43,6 +44,17 @@ class HIDDriver:
         return self._perform(lambda: self.pg.doubleClick(*self._to_px(x, y)), f"double_click({x},{y})")
 
     def type_text(self, text: str) -> ActionResult:
+        # Prefer AppleScript for typing to avoid stuck modifiers and flaky event injection on macOS.
+        if self.enabled:
+            try:
+                safe_text = text.replace("\\", "\\\\").replace('"', '\\"')
+                script = f'tell application "System Events" to keystroke "{safe_text}"'
+                subprocess.run(["osascript", "-e", script], check=True, capture_output=True)
+                self.logger.info("HID action executed (via AppleScript): type:%r", text)
+                return ActionResult(success=True)
+            except Exception as exc:
+                self.logger.warning("AppleScript typing failed, falling back to pyautogui: %s", exc)
+
         return self._perform(lambda: self.pg.write(text, interval=0.02), f"type:{text!r}")
 
     def press_keys(self, keys: Iterable[str]) -> ActionResult:

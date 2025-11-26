@@ -40,8 +40,8 @@ class PlannerClient:
         plan_id = str(uuid.uuid4())
         if not self.client:
             steps = [
-                Step(id=0, description="Inspect the desktop and orient to the request", success_criteria="You know which app or window to use", status="in_progress"),
-                Step(id=1, description=f"Execute the task: {user_prompt}", success_criteria="User-visible evidence the task is done"),
+                Step(id=0, description="Inspect the desktop and orient to the request", success_criteria="Relevant app or window is visible and ready", status="in_progress"),
+                Step(id=1, description=f"Execute the task: {user_prompt}", success_criteria="On-screen confirmation of the completed request (visible result, file, or page)"),
             ]
             return Plan(id=plan_id, user_prompt=user_prompt, steps=steps, current_step_index=0)
 
@@ -49,8 +49,14 @@ class PlannerClient:
         system_prompt = (
             "You are a task planner for a macOS desktop agent. "
             "Write a concise JSON object with an ordered `steps` array. "
-            "Each step must have fields: id (int), description (string), success_criteria (string), status (pending|in_progress|done|failed), notes (string). "
-            "Keep steps high-level (2-6 steps). Mark the first step status as 'in_progress'. "
+            "Each step must have fields: id (int), description (string), success_criteria (string), status (pending|in_progress|done|failed), notes (string), expected_state (string).\n"
+            "- Split the task into 3-7 small UI-manipulation steps that can usually be finished in 10-60 seconds.\n"
+            "- Avoid vague steps like 'execute the task'; prefer concrete UI goals such as 'Open Safari and navigate to example.com'.\n"
+            "- Mark the first step status as 'in_progress'; others should start as 'pending'.\n"
+            "- success_criteria must be VISUAL, e.g. 'Safari window visible with example.com loaded'.\n"
+            "- expected_state is optional; use it to note the anticipated UI state before running the step.\n"
+            "Example step:\n"
+            "{ \"id\": 0, \"description\": \"Open Safari\", \"success_criteria\": \"Safari window is visible\", \"status\": \"in_progress\", \"notes\": \"\", \"expected_state\": \"Dock shows Safari not active\" }\n"
             "Do not include any text outside the JSON."
         )
         user_prompt_block = f"User request: {user_prompt}\n\nPrior context:\n{context}"
@@ -69,10 +75,57 @@ class PlannerClient:
         except Exception as exc:  # pragma: no cover - defensive path
             self.logger.warning("Planner call failed; using fallback plan: %s", exc)
             steps = [
-                Step(id=0, description="Inspect the desktop and orient to the request", success_criteria="You know which app or window to use", status="in_progress"),
-                Step(id=1, description=f"Execute the task: {user_prompt}", success_criteria="User-visible evidence the task is done"),
+                Step(id=0, description="Inspect the desktop and orient to the request", success_criteria="Relevant app or window is visible and ready", status="in_progress"),
+                Step(id=1, description=f"Execute the task: {user_prompt}", success_criteria="On-screen confirmation of the completed request (visible result, file, or page)"),
             ]
             return Plan(id=plan_id, user_prompt=user_prompt, steps=steps, current_step_index=0)
+
+    def revise_plan(self, plan: Plan, history: List[str], screenshot_b64: str) -> Plan:
+        """Ask the planner to refine an in-flight plan based on progress and the current UI."""
+        if not self.client:
+            self.logger.info("Planner revision skipped: client unavailable.")
+            return plan
+
+        mime = "image/png" if self.settings.encode_format.lower() == "png" else "image/jpeg"
+        system_prompt = (
+            "You are revising an in-flight macOS desktop plan. Given the existing plan JSON, "
+            "recent events, and a screenshot, return an UPDATED plan JSON. Keep the same schema "
+            "as the planner output: id, user_prompt, steps (with id, description, success_criteria, "
+            "status, notes, expected_state), current_step_index.\n"
+            "- Keep 3-7 concise, UI-grounded steps that a human could finish in 10-60 seconds each.\n"
+            "- Mark steps as done if their success_criteria are visibly satisfied in the screenshot.\n"
+            "- Mark obviously blocked steps as failed with a short note; add missing steps if needed.\n"
+            "- Ensure exactly one step is 'in_progress' (the first not-done step). Others pending or done.\n"
+            "- Do not invent unrelated tasks; align strictly with the user_prompt.\n"
+            "Return JSON only."
+        )
+        plan_json = json.dumps(plan.to_dict())
+        user_content = [
+            {
+                "type": "text",
+                "text": (
+                    f"Existing plan:\n{plan_json}\n\nRecent events (most recent last):\n"
+                    + "\n".join(history[-40:])
+                ),
+            },
+            {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{screenshot_b64}"}},
+        ]
+
+        try:
+            response = self.client.chat.completions.create(
+                model=self.settings.planner_model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_content},
+                ],
+                response_format={"type": "json_object"},
+            )
+            content = response.choices[0].message.content if response and response.choices else "{}"
+            plan_dict = self._parse_plan_json(content, plan.id, plan.user_prompt)
+            return Plan.from_dict(plan_dict)
+        except Exception as exc:  # pragma: no cover - defensive path
+            self.logger.warning("Plan revision failed; keeping existing plan: %s", exc)
+            return plan
 
     def _parse_plan_json(self, content: Any, plan_id: str, user_prompt: str) -> Dict[str, Any]:
         if isinstance(content, list):
@@ -91,17 +144,19 @@ class PlannerClient:
                 step = Step(
                     id=int(raw.get("id", idx)),
                     description=str(raw.get("description", "")).strip() or f"Step {idx + 1}",
-                    success_criteria=str(raw.get("success_criteria", "")).strip() or "Criteria not provided",
+                    success_criteria=str(raw.get("success_criteria", "")).strip()
+                    or "Criteria not provided",
                     status=str(raw.get("status", "pending")),
                     notes=str(raw.get("notes", "")),
+                    expected_state=str(raw.get("expected_state", "")),
                 )
                 steps.append(step)
             except Exception:
                 continue
         if not steps:
             steps = [
-                Step(id=0, description="Inspect the desktop and orient to the request", success_criteria="You know which app or window to use", status="in_progress"),
-                Step(id=1, description=f"Execute the task: {user_prompt}", success_criteria="User-visible evidence the task is done"),
+                Step(id=0, description="Inspect the desktop and orient to the request", success_criteria="Relevant app or window is visible and ready", status="in_progress"),
+                Step(id=1, description=f"Execute the task: {user_prompt}", success_criteria="On-screen confirmation of the completed request (visible result, file, or page)"),
             ]
         if steps and steps[0].status == "pending":
             steps[0].status = "in_progress"

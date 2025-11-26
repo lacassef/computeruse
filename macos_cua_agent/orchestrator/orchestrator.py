@@ -10,7 +10,7 @@ from macos_cua_agent.drivers.action_engine import ActionEngine
 from macos_cua_agent.drivers.vision_pipeline import VisionPipeline
 from macos_cua_agent.memory.memory_manager import Episode, MemoryManager
 from macos_cua_agent.orchestrator.planner_client import PlannerClient
-from macos_cua_agent.orchestrator.planning import Plan
+from macos_cua_agent.orchestrator.planning import Plan, Step
 from macos_cua_agent.orchestrator.reflection import Reflector
 from macos_cua_agent.policies.policy_engine import PolicyEngine
 from macos_cua_agent.utils.config import Settings
@@ -26,7 +26,7 @@ class Orchestrator:
         policy_path = Path(__file__).resolve().parent.parent / "policies" / "safety_rules.yaml"
 
         self.vision = VisionPipeline(settings)
-        self.policy_engine = PolicyEngine(str(policy_path))
+        self.policy_engine = PolicyEngine(str(policy_path), settings)
         self.action_engine = ActionEngine(settings, self.policy_engine)
         self.cognitive_core = CognitiveCore(settings)
         self.memory = MemoryManager(settings)
@@ -65,17 +65,41 @@ class Orchestrator:
         repeat_same_action = 0
         repeat_info_for_model: dict | None = None
         hotkey_counts: dict[tuple[str, ...], int] = {}
-        hint_injected = False
+        hint_count = 0
+        max_hints = 3
+        plan_revision_count = 0
+        max_plan_revisions = 3
+        global_hotkeys = {("cmd", "space"), ("command", "space"), ("cmd", "tab"), ("command", "tab")}
 
         try:
             while not state.should_halt():
+                if plan and plan_revision_count < max_plan_revisions and self._should_replan(
+                    plan, state, repeat_same_action, repeat_without_change
+                ):
+                    revised_plan = self.planner.revise_plan(plan, state.history, current_frame)
+                    if revised_plan:
+                        if revised_plan.to_dict() != plan.to_dict():
+                            plan_revision_count += 1
+                            self.logger.info("Plan revised (auto); new current step index %s", revised_plan.current_step_index)
+                            state.history.append(
+                                f"plan_revised:auto:step_index={revised_plan.current_step_index}"
+                            )
+                        plan = revised_plan
+                        repeat_same_action = 0
+                        repeat_without_change = 0
+                        last_action_sig = None
+                        repeat_info_for_model = None
+
+                current_step = plan.current_step() if plan else None
+                loop_state = self._format_loop_state(plan, state, repeat_same_action, repeat_without_change)
                 action = self.cognitive_core.propose_action(
                     current_frame,
                     state.history,
                     user_prompt=user_prompt,
                     repeat_info=repeat_info_for_model,
                     plan=plan,
-                    current_step=plan.current_step() if plan else None,
+                    current_step=current_step,
+                    loop_state=loop_state,
                 )
 
                 if action.get("type") == "noop":
@@ -95,6 +119,13 @@ class Orchestrator:
 
                 result = self.action_engine.execute(action)
                 state.record_action(action, result)
+                if action.get("execution") == "shell" and result.metadata:
+                    stdout = (result.metadata.get("stdout") or "").strip()
+                    stderr = (result.metadata.get("stderr") or "").strip()
+                    if stdout:
+                        state.history.append(f"shell_stdout:{stdout[:500]}")
+                    if stderr:
+                        state.history.append(f"shell_stderr:{stderr[:500]}")
 
                 base_delay = self.settings.verify_delay_ms / 1000
                 extra_delay = 0.0
@@ -109,19 +140,22 @@ class Orchestrator:
 
                 if not changed:
                     self.logger.info("No UI change detected after action: %s", action)
+                else:
+                    # UI changed; allow future hotkeys to be considered fresh.
+                    hotkey_counts.clear()
 
-                if plan and plan.current_step():
+                if plan and current_step:
                     step_completed = False
                     if self.reflector.available:
                         step_completed = self.reflector.is_step_complete(
-                            plan.current_step(), state.history, next_frame, changed
+                            current_step, state.history, next_frame, changed
                         )
-                    elif result.success and changed:
-                        step_completed = True
+                    elif not self.settings.strict_step_completion:
+                        step_completed = self._heuristic_step_complete(current_step, action, result, changed)
                     if step_completed:
-                        finished_id = plan.current_step().id if plan.current_step() else None
-                        prev_step = plan.current_step()
+                        finished_id = current_step.id if current_step else None
                         plan.advance()
+                        hotkey_counts.clear()
                         state.history.append(
                             f"plan_step_completed:{finished_id if finished_id is not None else 'unknown'}"
                         )
@@ -131,45 +165,89 @@ class Orchestrator:
                             break
 
                 action_sig = repr(action)
+                is_wait = action.get("type") == "wait"
                 pending_break = False
-                if action_sig == last_action_sig:
-                    repeat_same_action += 1
-                    if repeat_same_action >= 5:
-                        pending_break = True
+                break_reason = ""
+                if not is_wait:
+                    if action_sig == last_action_sig:
+                        repeat_same_action += 1
+                        if repeat_same_action >= 5:
+                            pending_break = True
+                            break_reason = f"repeat_same_action:{repeat_same_action}"
+                    else:
+                        repeat_same_action = 0
+                    if not changed and action_sig == last_action_sig:
+                        repeat_without_change += 1
+                        if repeat_without_change >= 3:
+                            pending_break = True
+                            break_reason = break_reason or "repeat_without_change"
+                    else:
+                        repeat_without_change = 0
                 else:
                     repeat_same_action = 0
-                if not changed and action_sig == last_action_sig:
-                    repeat_without_change += 1
-                    if repeat_without_change >= 3:
-                        pending_break = True
-                else:
                     repeat_without_change = 0
 
-                if pending_break and self.reflector.available and not hint_injected:
-                    hint = self.reflector.suggest_hint(plan.current_step() if plan else None, state.history, next_frame)
-                    if hint:
-                        state.history.append(f"reflector_hint:{hint}")
+                if action.get("type") == "key":
+                    combo = tuple(sorted([k.lower() for k in action.get("keys") or []]))
+                    if combo in global_hotkeys and not changed:
+                        state.history.append(f"global_hotkey_no_effect:{'+'.join(combo)}")
                         repeat_info_for_model = {
                             "count": repeat_same_action,
                             "action": action_sig,
-                            "hint": hint,
+                            "hint": "Global hotkey had no visible effect; prefer clicking the visible app or window.",
                         }
-                        self.logger.info("Injected reflector hint to unblock: %s", hint)
-                        hint_injected = True
-                        pending_break = False
 
                 if pending_break:
-                    if repeat_same_action >= 5:
-                        reason = f"repeat_same_action:{repeat_same_action}"
-                        state.record_stuck(reason)
-                        self.logger.info("Breaking loop: repeated identical action %s times.", repeat_same_action)
-                    else:
-                        reason = "repeat_without_change"
-                        state.record_stuck(reason)
-                        self.logger.info("Breaking loop: repeated identical action without UI change.")
-                    break
+                    if plan and current_step:
+                        plan.fail_current(break_reason or "stuck")
+                        state.history.append(f"plan_step_failed:{current_step.id}:{break_reason or 'stuck'}")
+                    state.record_stuck(break_reason or "stuck")
+
+                    hint = ""
+                    plan_changed = False
+                    if self.reflector.available and hint_count < max_hints:
+                        hint = self.reflector.suggest_hint(plan.current_step() if plan else None, state.history, next_frame)
+                        if hint:
+                            hint_count += 1
+                            state.history.append(f"reflector_hint:{hint}")
+                            repeat_info_for_model = {
+                                "count": repeat_same_action,
+                                "action": action_sig,
+                                "hint": hint,
+                            }
+                            self.logger.info("Injected reflector hint to unblock: %s", hint)
+                            pending_break = False
+
+                    if plan and plan_revision_count < max_plan_revisions:
+                        revised_plan = self.planner.revise_plan(plan, state.history, next_frame)
+                        if revised_plan.to_dict() != plan.to_dict():
+                            plan_revision_count += 1
+                            state.history.append(
+                                f"plan_revised:stuck:step_index={revised_plan.current_step_index}"
+                            )
+                            self.logger.info(
+                                "Plan revised after stuck; new current step index %s", revised_plan.current_step_index
+                            )
+                            plan_changed = True
+                        plan = revised_plan
+                        if plan_changed:
+                            pending_break = False
+
+                    repeat_same_action = 0
+                    repeat_without_change = 0
+                    last_action_sig = None
+
+                    if pending_break:
+                        self.logger.info("Breaking loop: %s", break_reason or "stuck")
+                        break
+
+                    repeat_info_for_model = repeat_info_for_model or {"count": 0, "action": action_sig}
+                    current_frame = next_frame
+                    continue
+
                 last_action_sig = action_sig
-                repeat_info_for_model = {"count": repeat_same_action, "action": last_action_sig}
+                if not repeat_info_for_model or "hint" not in repeat_info_for_model:
+                    repeat_info_for_model = {"count": repeat_same_action, "action": last_action_sig}
 
                 current_frame = next_frame
         except KeyboardInterrupt:
@@ -181,6 +259,45 @@ class Orchestrator:
         self.logger.info("Session finished: %s", summary)
         self._persist_episode(user_prompt, state, plan)
         return summary
+
+    def _should_replan(
+        self, plan: Optional[Plan], state: StateManager, repeat_same_action: int, repeat_without_change: int
+    ) -> bool:
+        if not plan or not plan.current_step():
+            return False
+        if repeat_same_action >= 3 or repeat_without_change >= 2:
+            return True
+        if state.failure_count >= 3:
+            return True
+        if plan.current_step().status == "failed":
+            return True
+        return False
+
+    def _format_loop_state(
+        self, plan: Optional[Plan], state: StateManager, repeat_same_action: int, repeat_without_change: int
+    ) -> dict:
+        current_step = plan.current_step() if plan else None
+        return {
+            "current_step_id": current_step.id if current_step else None,
+            "current_step_status": current_step.status if current_step else None,
+            "failure_count": state.failure_count,
+            "steps_taken": state.steps,
+            "repeat_same_action": repeat_same_action,
+            "repeat_without_change": repeat_without_change,
+        }
+
+    def _heuristic_step_complete(self, step: Step, action: dict, result: ActionResult, changed: bool) -> bool:
+        """Conservative fallback when reflection is disabled."""
+        if not result.success or not changed:
+            return False
+        if action.get("type") in {"wait", "noop", "capture_only"}:
+            return False
+        if step.status == "failed":
+            return False
+        # Require a direct UI interaction before auto-completing.
+        if action.get("type") in {"left_click", "double_click", "right_click", "type", "scroll", "key", "mouse_move"}:
+            return True
+        return False
 
     def _persist_episode(self, user_prompt: str, state: StateManager, plan: Optional[Plan]) -> None:
         episode_id = plan.id if plan else f"session-{int(state.started_at)}"

@@ -60,6 +60,32 @@ COMPUTER_TOOL = {
     },
 }
 
+SHELL_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "shell",
+        "description": (
+            "Run safe, sandboxed shell commands in a constrained workspace. "
+            "Use this for local file operations or running short scripts."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "command": {
+                    "type": "string",
+                    "description": "Full command line, e.g. 'ls -la' or 'python script.py'.",
+                },
+                "cwd": {
+                    "type": "string",
+                    "description": "Optional relative working directory under the agent workspace.",
+                },
+            },
+            "required": ["command"],
+            "additionalProperties": False,
+        },
+    },
+}
+
 
 class CognitiveCore:
     """Calls Claude Opus 4.5 via OpenRouter with a custom computer tool."""
@@ -94,6 +120,7 @@ class CognitiveCore:
         repeat_info: Optional[Dict[str, Any]] = None,
         plan: Optional["Plan"] = None,
         current_step: Optional["Step"] = None,
+        loop_state: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Return the next action as a dict with at least a `type` field."""
         if not self.client:
@@ -111,6 +138,7 @@ class CognitiveCore:
                 repeat_info=repeat_info,
                 plan=plan,
                 current_step=current_step,
+                loop_state=loop_state,
             )
             parsed_action = self._parse_tool_call(response)
             if parsed_action:
@@ -128,28 +156,55 @@ class CognitiveCore:
         repeat_info: Optional[Dict[str, Any]],
         plan: Optional["Plan"],
         current_step: Optional["Step"],
+        loop_state: Optional[Dict[str, Any]],
     ) -> Any:
         """Send a vision + tool-calling request to OpenRouter."""
-        plan_text = ""
-        if plan:
-            plan_lines = [f"{s.id}. {s.description} (status={s.status})" for s in plan.steps]
-            plan_text = "\nPlan:\n" + "\n".join(plan_lines)
-            if current_step:
-                plan_text += (
-                    f"\nCurrent step {current_step.id}: {current_step.description} "
-                    f"(success: {current_step.success_criteria})"
-                )
+        plan_text = "No structured plan; infer progress from the user's request."
+        if plan and current_step:
+            upcoming = [
+                f"- Step {s.id}: {s.description} (status={s.status})"
+                for s in plan.steps
+                if s.id != current_step.id
+            ]
+            plan_text = (
+                "Current goal:\n"
+                f"- Step {current_step.id}: {current_step.description}\n"
+                f"- Success criteria: {current_step.success_criteria}\n"
+            )
+            if getattr(current_step, "expected_state", ""):
+                plan_text += f"- Expected state: {current_step.expected_state}\n"
+            if upcoming:
+                plan_text += "Upcoming steps (context only):\n" + "\n".join(upcoming[:4])
+        elif plan:
+            plan_lines = [f"- Step {s.id}: {s.description} (status={s.status})" for s in plan.steps]
+            plan_text = "Plan:\n" + "\n".join(plan_lines)
+
+        loop_state_text = ""
+        if loop_state:
+            loop_bits = [f"{k}={v}" for k, v in loop_state.items() if v not in (None, "")]
+            if loop_bits:
+                loop_state_text = "Loop state: " + ", ".join(loop_bits)
+
         system_prompt = f"""
-            You are a cautious, focused macOS desktop operator. You control the computer ONLY
-            through the `computer` tool. At each step you see a single screenshot of the
+            You are a cautious, focused macOS desktop operator. You primarily use the
+            `computer` tool to interact with the UI and may use a sandboxed `shell` tool
+            for workspace-only commands. At each step you see a single screenshot of the
             current display plus a short textual history of previous actions and
             observations.
             {plan_text}
-            
+            {loop_state_text}
+
+            Planning with the current screenshot
+            - Always reason from what is currently visible: windows, icons, menus.
+            - Use the current step above as your goal; follow its success_criteria.
+            - Prefer interacting with visible UI elements before global hotkeys (cmd+space, cmd+tab).
+              Example: if Safari is visible or active in the dock, click it instead of using Spotlight.
+            - Avoid repeating the same hotkey when it has not changed the UI.
+
             Your job:
             - Use the UI you see to make progress on the user's request.
-            - Decide ONE concrete next step and call the `computer` tool ONCE.
-            - If taking another action would not help, do NOT call the tool (let the
+            - Decide ONE concrete next step and call ONE tool (`computer` or `shell`) ONCE.
+            - If taking another action would not help, do NOT call a tool (let the
               system treat this as a noop and end the loop).
             
             Environment and coordinates
@@ -172,6 +227,7 @@ class CognitiveCore:
             - Use this history to avoid repeating failed or pointless actions.
             
             General behavior
+            - Anchor on the current step and its success_criteria when choosing an action.
             - Think about what the user wants, then choose the SINGLE best next step:
               - If you need to move the mouse before clicking, first call `move_mouse` with
                 coordinates of the target, then in a later step you may click.
@@ -185,6 +241,16 @@ class CognitiveCore:
               (e.g. cmd+t) instead of spawning multiple windows.
             - Be brief in your internal reasoning; your primary output is the tool call, not
               text replies.
+
+            Action selection preferences
+            - Prefer clicking visible buttons, icons, windows, or dock items over global hotkeys.
+            - Use Spotlight (cmd+space) only when the needed app is not visible or active.
+            - Avoid repeating the same global shortcut more than twice if the UI is unchanged.
+
+            Avoid premature completion
+            - Do NOT assume a step is complete just because you clicked or launched something.
+            - Aim for a screenshot that clearly matches the current step's success_criteria.
+            - If unsure, take a short wait or another targeted action instead of stopping.
             
             Safety and non-destructive behavior
             - Avoid destructive or irreversible actions, including but not limited to:
@@ -192,15 +258,20 @@ class CognitiveCore:
               - Changing system settings unrelated to the user’s request
               - Formatting or erasing disks
               - Interacting with security/credential tools like Keychain Access
-            - Never attempt to:
-              - Run terminal or shell commands.
+            - You MAY use the `shell` tool only for small, local tasks such as:
+              - Inspecting or editing files inside the dedicated workspace.
+              - Running short scripts (a few seconds) without network access.
+            - Do NOT attempt to:
+              - Access the network or remote systems (curl, wget, ssh, scp).
+              - Use sudo or modify system-level settings.
+              - Read or modify files outside the dedicated workspace.
               - Install, uninstall, or update system software unless the user explicitly
                 asks and the UI clearly shows a safe, reversible path.
             - If the user’s request seems dangerous or unclear (e.g. “wipe this Mac”),
               do nothing and effectively noop: do not call the tool.
             
             Using the `computer` tool
-            You can ONLY act via this tool. Its schema:
+            Use this for UI interactions. Its schema:
             
             - `action`: one of:
               - "move_mouse"  – move cursor to (x, y)
@@ -220,6 +291,14 @@ class CognitiveCore:
               - `keys`: array of key names for hotkeys (e.g. ["cmd","t"]).
               - `seconds`: number of seconds to wait for "wait" actions.
             
+            Using the `shell` tool
+            - Purpose: local, short-lived commands in the sandbox workspace.
+            - Provide `command` (full command line) and optional relative `cwd`.
+            - Keep commands concise; avoid long-running jobs or networking.
+            - Use it for quick, deterministic checks inside the workspace when that is
+              faster than inspecting the UI (e.g. run `ls` to confirm a file exists, or
+              `cat` to verify generated content). Keep these checks short and safe.
+            
             Hotkeys and repeated actions
             - Use hotkeys sparingly and purposefully, especially global combos like
               cmd+space, cmd+tab, cmd+q.
@@ -230,10 +309,9 @@ class CognitiveCore:
               stop (no tool call).
             
             Typing and text fields
-            - Before typing, make sure the correct input field is focused by clicking on
-              it if needed.
-            - When filling forms or search boxes, type the full text in a single "type"
-              action; do not type each character with separate calls.
+            - Before typing, YOU MUST ensure the correct input field is focused.
+            - If you just opened a menu or Spotlight, CLICK the text box first, even if it looks open.
+            - When filling forms or search boxes, type the full text in a single "type" action; do not type each character with separate calls.
             - Do NOT type extremely long or repetitive text. Stay concise and relevant
               to the user's request.
             
@@ -245,9 +323,19 @@ class CognitiveCore:
             - You rarely need the explicit "screenshot" action, since you normally get a
               fresh screenshot after each step. Use it only when a non-input refresh is
               truly necessary.
+
+            Long-running operations
+            - For downloads, installs, indexing, rendering, or other long jobs, do NOT
+              assume clicking the start button means the step is done.
+            - Issue a series of `wait` actions (5–15 seconds each) and inspect each
+              refreshed screenshot until you see a stable success state that matches the
+              current step's success_criteria (e.g. progress finished, 'Completed'
+              message, file visible in Finder).
             
             Loop/termination guidance
             - Aim to finish tasks in as few steps as reasonably possible.
+            - Treat the plan's current step and its success_criteria as the authority on
+              when to stop; do not declare completion just because an action was started.
             - When the user’s goal appears complete (e.g. the requested page is visible,
               the desired setting is changed, the file is open), stop by NOT calling the
               tool.
@@ -257,7 +345,7 @@ class CognitiveCore:
             Summary of your output
             - For EVERY step where you decide to act, you MUST:
               1) Decide on exactly ONE next action.
-              2) Call the `computer` tool ONCE with appropriate arguments.
+              2) Call ONE tool (`computer` or `shell`) ONCE with appropriate arguments.
             - If no sensible action exists, DO NOT call any tool. The system will treat
               your reply as a noop and may end the session.
             
@@ -269,6 +357,8 @@ class CognitiveCore:
                 f" Warning: last action repeated {repeat_info['count']} times "
                 f"({repeat_info.get('action')}); choose a different next action."
             )
+        if repeat_info and repeat_info.get("hint"):
+            system_prompt += f" Hint from verifier: {repeat_info['hint']}."
 
         mime = "image/png" if self.settings.encode_format.lower() == "png" else "image/jpeg"
 
@@ -277,7 +367,7 @@ class CognitiveCore:
         content = [
             {
                 "type": "text",
-                "text": f"{task_hint}\n\nPlan your next action, then call the computer tool once.",
+                "text": f"{task_hint}\n\nPlan your next action, then call one tool once.",
             },
             {
                 "type": "image_url",
@@ -293,7 +383,7 @@ class CognitiveCore:
         return self.client.chat.completions.create(
             model=self.settings.openrouter_model,
             messages=messages,
-            tools=[COMPUTER_TOOL],
+            tools=[COMPUTER_TOOL, SHELL_TOOL],
             tool_choice="auto",
         )
 
@@ -309,13 +399,18 @@ class CognitiveCore:
             return {"type": "noop", "reason": "model returned text"}
 
         first = tool_calls[0]
+        tool_name = getattr(first.function, "name", None)
         args_raw = first.function.arguments if hasattr(first, "function") else "{}"
         try:
             args = json.loads(args_raw or "{}")
         except json.JSONDecodeError:
             return {"type": "noop", "reason": f"bad tool args: {args_raw}"}
 
-        return self._map_tool_args(args)
+        if tool_name == "computer":
+            return self._map_tool_args(args)
+        if tool_name == "shell":
+            return self._map_shell_args(args)
+        return {"type": "noop", "reason": f"unknown tool {tool_name}"}
 
     def _map_tool_args(self, args: Dict[str, Any]) -> Dict[str, Any]:
         action = args.get("action")
@@ -343,3 +438,16 @@ class CognitiveCore:
             return {"type": "capture_only", "reason": "model requested screenshot"}
 
         return {"type": "noop", "reason": f"unknown action {action}"}
+
+    def _map_shell_args(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        command = args.get("command") or ""
+        cwd = args.get("cwd")
+        if not command:
+            return {"type": "noop", "reason": "shell command missing"}
+
+        return {
+            "type": "sandbox_shell",
+            "cmd": command,
+            "cwd": cwd,
+            "execution": "shell",
+        }

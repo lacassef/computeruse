@@ -35,14 +35,20 @@ class Reflector:
         return self.client is not None
 
     def is_step_complete(self, step: Step, history: List[str], screenshot_b64: str, changed: bool) -> bool:
-        """Ask the verifier model if the step is complete; fall back to simple heuristics."""
+        """Ask the verifier model if the step is complete; default to incomplete on failure."""
         if not self.client:
-            return changed
+            return False
+        expected_text = ""
+        if getattr(step, "expected_state", ""):
+            expected_text = f"Expected state before the step: {step.expected_state}\n"
         prompt = (
-            "You are a verifier. Given the current sub-step, recent history, and a screenshot, "
-            "answer with a single word: 'yes' if the step is complete, otherwise 'no'. "
-            "Step: {desc}. Success criteria: {criteria}."
-        ).format(desc=step.description, criteria=step.success_criteria)
+            "You are a visual verifier for a desktop agent. Given the current sub-step, "
+            "recent history, and a screenshot, decide if the step is COMPLETE right now.\n"
+            "Step: {desc}\nSuccess criteria: {criteria}\n{expected_text}\n"
+            "Say 'yes' only if the screenshot clearly satisfies the success criteria. "
+            "If you are uncertain, the view seems unrelated, or the UI looks mid-process "
+            "(loading indicators, progress bars, partial results), answer 'no'."
+        ).format(desc=step.description, criteria=step.success_criteria, expected_text=expected_text)
         content = [
             {"type": "text", "text": f"{prompt}\n\nRecent events:\n" + "\n".join(history[-20:])},
             {"type": "image_url", "image_url": {"url": f"data:{self.mime};base64,{screenshot_b64}"}},
@@ -51,7 +57,14 @@ class Reflector:
             response = self.client.chat.completions.create(
                 model=self.settings.reflector_model,
                 messages=[
-                    {"role": "system", "content": "Reply with only 'yes' or 'no'."},
+                    {
+                        "role": "system",
+                        "content": (
+                            "Reply with only 'yes' or 'no'. Be conservative: if there is any uncertainty, "
+                            "the process looks in-progress (loading spinner, progress bar, 'downloading...', etc.), "
+                            "or the success criteria might not be fully satisfied in the screenshot, answer 'no'."
+                        ),
+                    },
                     {"role": "user", "content": content},
                 ],
                 max_tokens=5,
@@ -61,8 +74,8 @@ class Reflector:
             normalized = text.strip().lower()
             return normalized.startswith("y")
         except Exception as exc:  # pragma: no cover - defensive path
-            self.logger.warning("Reflection check failed; falling back to heuristic: %s", exc)
-            return changed
+            self.logger.warning("Reflection check failed; treating step as incomplete: %s", exc)
+            return False
 
     def suggest_hint(self, step: Optional[Step], history: List[str], screenshot_b64: str) -> str:
         if not self.client:

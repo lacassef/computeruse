@@ -5,6 +5,7 @@ import time
 from macos_cua_agent.agent.state_manager import ActionResult
 from macos_cua_agent.drivers.hid_driver import HIDDriver
 from macos_cua_agent.drivers.semantic_driver import SemanticDriver
+from macos_cua_agent.drivers.shell_driver import ShellDriver
 from macos_cua_agent.policies.policy_engine import PolicyEngine
 from macos_cua_agent.utils.config import Settings
 from macos_cua_agent.utils.logger import get_logger
@@ -18,6 +19,7 @@ class ActionEngine:
         self.policy_engine = policy_engine
         self.hid_driver = HIDDriver(settings)
         self.semantic_driver = SemanticDriver(settings)
+        self.shell_driver = ShellDriver(settings)
         self.logger = get_logger(__name__, level=settings.log_level)
 
     def execute(self, action: dict) -> ActionResult:
@@ -41,6 +43,8 @@ class ActionEngine:
         execution_path = action.get("execution", "hid")
         if execution_path == "semantic" and self.settings.enable_semantic:
             result = self.semantic_driver.execute(action)
+        elif execution_path == "shell":
+            result = self.shell_driver.execute(action)
         else:
             result = self._execute_hid(action)
 

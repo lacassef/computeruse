@@ -8,5 +8,25 @@ hitl_actions:
   - erase_disk
   - format_disk
 
+allowed_shell_basenames:
+  - ls
+  - cat
+  - pwd
+  - mkdir
+  - rm
+  - cp
+  - mv
+  - python
+  - node
+
+blocked_shell_basenames:
+  - sudo
+  - ssh
+  - scp
+  - curl
+  - wget
+  - chmod
+  - chown
+
 notes: |
   Extend this file to reflect local risk appetite and app allow/deny lists.

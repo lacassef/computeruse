@@ -59,10 +59,12 @@ class StateManager:
             "text": action.get("text"),
             "x": action.get("x"),
             "y": action.get("y"),
+            "cmd": action.get("cmd"),
+            "execution": action.get("execution"),
         }
         self.history.append(f"action:{action_summary}")
         self.steps += 1
-        if not result.success:
+        if not result.success and result.reason != "hotkey deduped":
             self.failure_count += 1
 
     def should_halt(self) -> bool:
