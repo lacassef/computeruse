@@ -73,5 +73,24 @@ class ActionEngine:
             keys = action.get("keys") or []
             return self.hid_driver.press_keys(keys)
 
+        if action_type == "open_app":
+            app_name = action.get("app_name", "")
+            self.logger.info("Executing open_app sequence for: %s", app_name)
+            
+            # 1. Open Spotlight
+            res = self.hid_driver.press_keys(["command", "space"])
+            if not res.success:
+                return res
+            time.sleep(0.5) # Wait for Spotlight animation
+            
+            # 2. Type App Name
+            res = self.hid_driver.type_text(app_name)
+            if not res.success:
+                return res
+            time.sleep(0.3) # Wait for search results
+            
+            # 3. Press Enter
+            return self.hid_driver.press_keys(["enter"])
+
         self.logger.warning("Unknown HID action: %s", action)
         return ActionResult(success=False, reason="unknown action")

@@ -1,2 +1,6 @@
 /project.md
 /.env
+/.idea
+/*/.agent_memory
+/*/.agent_shell
+/.agent_shell/

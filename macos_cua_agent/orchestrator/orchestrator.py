@@ -116,6 +116,17 @@ class Orchestrator:
                         repeat_info_for_model = {"count": repeat_same_action, "action": repr(action)}
                         continue
                     hotkey_counts[combo] = count + 1
+                
+                if action.get("type") == "open_app":
+                    app_key = ("open_app", action.get("app_name", "").lower())
+                    count = hotkey_counts.get(app_key, 0)
+                    if count >= 1:  # Strict limit: don't open the same app twice in a short loop
+                         self.logger.info("Skipping open_app %s; already executed", app_key[1])
+                         result = ActionResult(success=False, reason="app open deduped")
+                         state.record_action(action, result)
+                         repeat_info_for_model = {"count": repeat_same_action, "action": repr(action)}
+                         continue
+                    hotkey_counts[app_key] = count + 1
 
                 result = self.action_engine.execute(action)
                 state.record_action(action, result)
@@ -171,14 +182,14 @@ class Orchestrator:
                 if not is_wait:
                     if action_sig == last_action_sig:
                         repeat_same_action += 1
-                        if repeat_same_action >= 5:
+                        if repeat_same_action >= 3:  # Stricter limit (was 5)
                             pending_break = True
                             break_reason = f"repeat_same_action:{repeat_same_action}"
                     else:
                         repeat_same_action = 0
                     if not changed and action_sig == last_action_sig:
                         repeat_without_change += 1
-                        if repeat_without_change >= 3:
+                        if repeat_without_change >= 2:  # Stricter limit (was 3)
                             pending_break = True
                             break_reason = break_reason or "repeat_without_change"
                     else:
@@ -295,7 +306,7 @@ class Orchestrator:
         if step.status == "failed":
             return False
         # Require a direct UI interaction before auto-completing.
-        if action.get("type") in {"left_click", "double_click", "right_click", "type", "scroll", "key", "mouse_move"}:
+        if action.get("type") in {"left_click", "double_click", "right_click", "type", "scroll", "key", "mouse_move", "open_app"}:
             return True
         return False
 

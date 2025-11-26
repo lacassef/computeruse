@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from macos_cua_agent.utils.config import Settings
 from macos_cua_agent.utils.logger import get_logger
-from macos_cua_agent.utils.macos_integration import get_display_info
+from macos_cua_agent.utils.macos_integration import get_display_info, get_system_info
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from macos_cua_agent.orchestrator.planning import Plan, Step
@@ -35,6 +35,7 @@ COMPUTER_TOOL = {
                         "hotkey",
                         "wait",
                         "screenshot",
+                        "open_app",
                     ],
                 },
                 "x": {"type": "number", "description": "X coordinate in logical pixels."},
@@ -44,6 +45,7 @@ COMPUTER_TOOL = {
                     "description": "Vertical scroll amount (positive up, negative down).",
                 },
                 "text": {"type": "string", "description": "Text to type."},
+                "app_name": {"type": "string", "description": "Name of the application to open (for 'open_app' action)."},
                 "keys": {
                     "type": "array",
                     "items": {"type": "string"},
@@ -94,6 +96,7 @@ class CognitiveCore:
         self.settings = settings
         self.logger = get_logger(__name__, level=settings.log_level)
         self.display = get_display_info()
+        self.system_info = get_system_info()
         self.client = self._build_client()
 
     def _build_client(self) -> Optional[Any]:
@@ -208,6 +211,7 @@ class CognitiveCore:
               system treat this as a noop and end the loop).
             
             Environment and coordinates
+            - System: {self.system_info}
             - The visible logical display size is {self.display.logical_width}x{self.display.logical_height} pixels.
             - All mouse-related actions (`move_mouse`, `left_click`, `right_click`, `double_click`)
               must use coordinates in THIS logical coordinate space.
@@ -244,7 +248,7 @@ class CognitiveCore:
 
             Action selection preferences
             - Prefer clicking visible buttons, icons, windows, or dock items over global hotkeys.
-            - Use Spotlight (cmd+space) only when the needed app is not visible or active.
+            - Use the `open_app` action to launch applications via Spotlight. Do NOT manually use cmd+space and type; `open_app` handles the sequence reliably.
             - Avoid repeating the same global shortcut more than twice if the UI is unchanged.
 
             Avoid premature completion
@@ -283,11 +287,13 @@ class CognitiveCore:
               - "hotkey"      – press a key combination
               - "wait"        – wait for a number of seconds
               - "screenshot"  – request a fresh screenshot without input
+              - "open_app"    – robustly open an app via Spotlight (Cmd+Space -> Type -> Enter)
             
             - Additional parameters:
               - `x`, `y`: numbers, logical pixel coordinates for mouse actions.
               - `scroll_y`: number, positive=scroll up, negative=scroll down.
               - `text`: string to type.
+              - `app_name`: string, name of the app to open (for `open_app`).
               - `keys`: array of key names for hotkeys (e.g. ["cmd","t"]).
               - `seconds`: number of seconds to wait for "wait" actions.
             
@@ -310,7 +316,7 @@ class CognitiveCore:
             
             Typing and text fields
             - Before typing, YOU MUST ensure the correct input field is focused.
-            - If you just opened a menu or Spotlight, CLICK the text box first, even if it looks open.
+            - If you just opened a menu or clicked a text box, your NEXT action can be `type`.
             - When filling forms or search boxes, type the full text in a single "type" action; do not type each character with separate calls.
             - Do NOT type extremely long or repetitive text. Stay concise and relevant
               to the user's request.
@@ -436,6 +442,8 @@ class CognitiveCore:
             return {"type": "wait", "seconds": float(args.get("seconds", 1))}
         if action == "screenshot":
             return {"type": "capture_only", "reason": "model requested screenshot"}
+        if action == "open_app":
+            return {"type": "open_app", "app_name": args.get("app_name", "")}
 
         return {"type": "noop", "reason": f"unknown action {action}"}
 

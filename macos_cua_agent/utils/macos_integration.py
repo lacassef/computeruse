@@ -93,3 +93,23 @@ def has_accessibility_permission() -> bool:
     except Exception:
         return False
 
+
+def get_system_info() -> str:
+    """Returns a string describing the macOS version and hardware model."""
+    import platform
+    import subprocess
+
+    try:
+        ver, _, arch = platform.mac_ver()
+        model = "Unknown Mac"
+        try:
+            # sysctl -n hw.model returns something like "Mac14,2" or "MacBookPro18,3"
+            res = subprocess.check_output(["sysctl", "-n", "hw.model"], text=True)
+            model = res.strip()
+        except Exception:
+            pass
+
+        return f"macOS {ver} ({arch}) on {model}"
+    except Exception:
+        return "macOS (Unknown System)"
+

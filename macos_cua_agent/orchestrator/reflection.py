@@ -67,7 +67,7 @@ class Reflector:
                     },
                     {"role": "user", "content": content},
                 ],
-                max_tokens=5,
+                max_tokens=1000,
             )
             raw = response.choices[0].message.content if response and response.choices else ""
             text = "".join([frag.text for frag in raw]) if isinstance(raw, list) else str(raw or "")
@@ -99,7 +99,7 @@ class Reflector:
                     {"role": "system", "content": "Provide one concise hint, no preamble."},
                     {"role": "user", "content": content},
                 ],
-                max_tokens=40,
+                max_tokens=1000,
             )
             raw = response.choices[0].message.content if response and response.choices else ""
             return "".join([frag.text for frag in raw]) if isinstance(raw, list) else str(raw or "")
