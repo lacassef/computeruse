@@ -1,18 +1,67 @@
 from __future__ import annotations
 
+import subprocess
+from typing import Optional
+
 from macos_cua_agent.agent.state_manager import ActionResult
 from macos_cua_agent.utils.config import Settings
 from macos_cua_agent.utils.logger import get_logger
 
 
 class SemanticDriver:
-    """Stub for semantic execution via AX APIs or AppleScript."""
+    """Semantic execution via AppleScript/JXA for high-level app intents."""
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.logger = get_logger(__name__, level=settings.log_level)
 
     def execute(self, action: dict) -> ActionResult:
-        self.logger.info("Semantic driver stub invoked with action: %s", action)
-        return ActionResult(success=False, reason="semantic path not implemented")
+        command = action.get("command")
+        if command == "focus_app":
+            return self._focus_app(action.get("app_name") or action.get("app"))
+        if command == "insert_text_at_cursor":
+            return self._insert_text(action.get("text", ""))
+        if command == "save_document":
+            return self._save_document()
 
+        self.logger.info("Semantic driver received unsupported command: %s", action)
+        return ActionResult(success=False, reason="unsupported semantic command")
+
+    def _focus_app(self, app_name: Optional[str]) -> ActionResult:
+        if not app_name:
+            return ActionResult(success=False, reason="app_name required for focus_app")
+        script = f'tell application "{app_name}" to activate'
+        return self._run_osascript(script, f"focus {app_name}")
+
+    def _insert_text(self, text: str) -> ActionResult:
+        if not text:
+            return ActionResult(success=False, reason="no text provided")
+        script = f'tell application "System Events" to keystroke {self._escape_osascript_string(text)}'
+        return self._run_osascript(script, "insert_text")
+
+    def _save_document(self) -> ActionResult:
+        script = 'tell application "System Events" to keystroke "s" using {command down}'
+        return self._run_osascript(script, "save_document")
+
+    def _run_osascript(self, script: str, label: str) -> ActionResult:
+        try:
+            completed = subprocess.run(
+                ["osascript", "-e", script],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if completed.returncode == 0:
+                return ActionResult(success=True, reason=f"{label} executed")
+            return ActionResult(
+                success=False,
+                reason=f"{label} failed: {completed.stderr.strip() or completed.stdout.strip()}",
+            )
+        except Exception as exc:
+            self.logger.warning("Semantic command %s failed: %s", label, exc)
+            return ActionResult(success=False, reason=f"{label} exception: {exc}")
+
+    def _escape_osascript_string(self, text: str) -> str:
+        # Wrap and escape a string for AppleScript keystroke.
+        escaped = text.replace('"', '\\"')
+        return f'"{escaped}"'

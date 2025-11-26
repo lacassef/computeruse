@@ -39,6 +39,7 @@ class StateManager:
         self.failure_count = 0
         self.steps = 0
         self.started_at = time.time()
+        self.stuck_reasons: List[str] = []
 
     def record_observation(self, image_b64: str, changed: bool, note: str = "") -> Observation:
         obs = Observation(image_b64=image_b64, timestamp=time.time(), changed_since_last=changed, note=note)
@@ -73,6 +74,10 @@ class StateManager:
             return True
         return False
 
+    def record_stuck(self, reason: str) -> None:
+        self.stuck_reasons.append(reason)
+        self.history.append(f"stuck:{reason}")
+
     def summary(self) -> Dict[str, Any]:
         return {
             "steps": self.steps,
@@ -81,4 +86,5 @@ class StateManager:
             "actions": list(self.actions),
             "observations": len(self.observations),
             "runtime_seconds": time.time() - self.started_at,
+            "stuck_reasons": list(self.stuck_reasons),
         }

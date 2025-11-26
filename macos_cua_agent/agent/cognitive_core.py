@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from macos_cua_agent.utils.config import Settings
 from macos_cua_agent.utils.logger import get_logger
 from macos_cua_agent.utils.macos_integration import get_display_info
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from macos_cua_agent.orchestrator.planning import Plan, Step
 
 # OpenRouter exposes an OpenAI-compatible tool-calling API. We define our own
 # computer tool schema so Claude Opus 4.5 can drive local actions.
@@ -89,6 +92,8 @@ class CognitiveCore:
         history: List[str],
         user_prompt: Optional[str] = None,
         repeat_info: Optional[Dict[str, Any]] = None,
+        plan: Optional["Plan"] = None,
+        current_step: Optional["Step"] = None,
     ) -> Dict[str, Any]:
         """Return the next action as a dict with at least a `type` field."""
         if not self.client:
@@ -100,7 +105,12 @@ class CognitiveCore:
 
         try:
             response = self._call_openrouter(
-                observation_b64, history, user_prompt=user_prompt, repeat_info=repeat_info
+                observation_b64,
+                history,
+                user_prompt=user_prompt,
+                repeat_info=repeat_info,
+                plan=plan,
+                current_step=current_step,
             )
             parsed_action = self._parse_tool_call(response)
             if parsed_action:
@@ -116,13 +126,25 @@ class CognitiveCore:
         history: List[str],
         user_prompt: Optional[str],
         repeat_info: Optional[Dict[str, Any]],
+        plan: Optional["Plan"],
+        current_step: Optional["Step"],
     ) -> Any:
         """Send a vision + tool-calling request to OpenRouter."""
+        plan_text = ""
+        if plan:
+            plan_lines = [f"{s.id}. {s.description} (status={s.status})" for s in plan.steps]
+            plan_text = "\nPlan:\n" + "\n".join(plan_lines)
+            if current_step:
+                plan_text += (
+                    f"\nCurrent step {current_step.id}: {current_step.description} "
+                    f"(success: {current_step.success_criteria})"
+                )
         system_prompt = f"""
             You are a cautious, focused macOS desktop operator. You control the computer ONLY
             through the `computer` tool. At each step you see a single screenshot of the
             current display plus a short textual history of previous actions and
             observations.
+            {plan_text}
             
             Your job:
             - Use the UI you see to make progress on the user's request.
